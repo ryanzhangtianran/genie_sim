@@ -25,6 +25,13 @@ class RotateStage(Stage):
         pick_up_direction = self.extra_params.get("pick_up_direction", "z")
         place_origin_position = self.extra_params.get("place_origin_position", True)
         pick_up_pose = None
+        logger.info(f"===== DEBUG: 摆正后物体的局部轴在世界坐标系中的方向 =====")
+        logger.info(f"物体 X 轴 (world): {anchor_pose[:3, 0].tolist()}")
+        logger.info(f"物体 Y 轴 (world): {anchor_pose[:3, 1].tolist()}")
+        logger.info(f"物体 Z 轴 (world): {anchor_pose[:3, 2].tolist()}")
+        logger.info(f"物体位置 (world): {anchor_pose[:3, 3].tolist()}")
+        logger.info(f"=============================================")
+
         # Calculate gripper transformation relative to object (in object coordinate system)
         gripper2obj = np.linalg.inv(anchor_pose) @ gripper_pose
         object2gripper = np.linalg.inv(gripper_pose) @ anchor_pose
@@ -57,17 +64,60 @@ class RotateStage(Stage):
         new_anchor_pose = anchor_pose.copy()
         new_anchor_pose[:3, :3] = R_align @ anchor_pose[:3, :3]
 
+        # If target_front_angles is specified, constrain the front axis direction
+        target_front_angles = self.extra_params.get("target_front_angles", None)
+        target_front_axis = self.extra_params.get("target_front_axis", "x")
+        if target_front_angles is not None:
+            # target_front_angles: [angle_with_X, angle_with_Y, angle_with_Z] in degrees
+            # Compute the desired world direction from the angles
+            angles_rad = np.deg2rad(target_front_angles)
+            desired_direction = np.array([np.cos(angles_rad[0]), np.cos(angles_rad[1]), np.cos(angles_rad[2])])
+            desired_direction = desired_direction / (np.linalg.norm(desired_direction) + 1e-8)
+
+            # Get current front axis after up-alignment
+            axis_map = {"x": 0, "y": 1, "z": 2}
+            front_axis_idx = axis_map.get(target_front_axis, 0)
+            current_front = new_anchor_pose[:3, front_axis_idx]
+
+            # Project both onto horizontal plane (perpendicular to world_up_vector)
+            current_front_h = current_front.copy()
+            current_front_h[2] = 0
+            desired_direction_h = desired_direction.copy()
+            desired_direction_h[2] = 0
+            current_front_h = current_front_h / (np.linalg.norm(current_front_h) + 1e-8)
+            desired_direction_h = desired_direction_h / (np.linalg.norm(desired_direction_h) + 1e-8)
+
+            # Compute rotation angle around Z to align front axis
+            cos_angle = np.clip(np.dot(current_front_h, desired_direction_h), -1, 1)
+            cross = np.cross(current_front_h, desired_direction_h)
+            angle = np.arctan2(cross[2], cos_angle)
+
+            # Apply rotation around Z
+            R_z = np.array([
+                [np.cos(angle), -np.sin(angle), 0],
+                [np.sin(angle),  np.cos(angle), 0],
+                [0, 0, 1]
+            ])
+            new_anchor_pose[:3, :3] = R_z @ new_anchor_pose[:3, :3]
+
         new_gripper_pose = new_anchor_pose @ gripper2obj
         target_pose = gripper_pose.copy()
         target_pose[:3, :3] = new_gripper_pose[:3, :3]
 
         target_poses = [target_pose]
-        rotate_angle = 0
-        rotate_delta = 5
-        while rotate_angle < 360:
-            target_pose = rotate_along_axis(target_pose, rotate_delta, "z", False)
-            target_poses.append(target_pose)
-            rotate_angle += rotate_delta
+        if target_front_angles is not None:
+            # Search ±90° around the target angle, sorted by proximity to target
+            deltas = sorted([d for d in range(-90, 91, 5) if d != 0], key=lambda x: abs(x))
+            for delta in deltas:
+                perturbed_pose = rotate_along_axis(target_pose.copy(), delta, "z", False)
+                target_poses.append(perturbed_pose)
+        else:
+            rotate_angle = 0
+            rotate_delta = 5
+            while rotate_angle < 360:
+                target_pose = rotate_along_axis(target_pose, rotate_delta, "z", False)
+                target_poses.append(target_pose)
+                rotate_angle += rotate_delta
 
         target_poses = np.array(target_poses)
 
@@ -98,16 +148,17 @@ class RotateStage(Stage):
             is_right = arm == "right"
             elbow_name = "arm_r_link4" if is_right else "arm_l_link4"
             hand_name = "gripper_r_center_link" if is_right else "gripper_l_center_link"
-            idx_sorted = sorted_by_position_humanlike(
-                joint_positions=ik_info["joint_positions"][ik_success],
-                joint_names=ik_info["joint_names"][ik_success],
-                link_poses=ik_info["link_poses"][ik_success],
-                is_right=is_right,
-                elbow_name=elbow_name,
-                hand_name=hand_name,
-                is_from_up_side=False,
-            )
-            target_poses = target_poses[idx_sorted]
+            if target_front_angles is None:
+                idx_sorted = sorted_by_position_humanlike(
+                    joint_positions=ik_info["joint_positions"][ik_success],
+                    joint_names=ik_info["joint_names"][ik_success],
+                    link_poses=ik_info["link_poses"][ik_success],
+                    is_right=is_right,
+                    elbow_name=elbow_name,
+                    hand_name=hand_name,
+                    is_from_up_side=False,
+                )
+                target_poses = target_poses[idx_sorted]
         target_place_poses = None
         if place_origin_position:
             # get place pose

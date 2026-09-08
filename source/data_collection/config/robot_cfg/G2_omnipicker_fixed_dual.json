@@ -106,8 +106,8 @@
     },
     "camera": {
         "/G2/head_link3/head_front_Camera": [
-            640,
-            400
+            1280,
+            800
         ],
         "/G2/gripper_r_base_link/Right_Camera": [
             1280,
@@ -171,12 +171,12 @@
         },
         "closed_velocities": {
             "left": [
-                -5,
-                -5
+                -1.5,
+                -1.5
             ],
             "right": [
-                -5,
-                -5
+                -1.5,
+                -1.5
             ]
         }
     },

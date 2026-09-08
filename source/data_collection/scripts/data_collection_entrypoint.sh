@@ -5,6 +5,9 @@
 # Usage: ./data_collection_entrypoint.sh [--headless] [--no-record] [--task TASK_PATH]
 
 set -eo pipefail
+# Container user is 1234; world-writable output lets the host archive/clean
+# without sudo. The bind mount is private to this workstation.
+umask 000
 
 # Default values
 HEADLESS=false

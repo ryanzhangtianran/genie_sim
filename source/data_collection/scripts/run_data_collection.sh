@@ -87,7 +87,17 @@ grant_access() {  # $1 = target dir
 }
 grant_access "$CURRENT_DIR/scripts"
 grant_access "$CURRENT_DIR/saved_task"
-grant_access "$CURRENT_DIR/recording_data"
+# Where episodes land. The server always writes to
+# /geniesim/main/data_collection/recording_data inside the container; that path
+# is bind-mounted from GENIESIM_RECORDING_ROOT when set (e.g. a NAS export), and
+# from the repo's own recording_data/ otherwise. Resolved through symlinks
+# because the docker daemon mounts host paths literally.
+RECORDING_ROOT="$(readlink -f "${GENIESIM_RECORDING_ROOT:-$CURRENT_DIR/recording_data}")"
+mkdir -p "$RECORDING_ROOT"
+grant_access "$RECORDING_ROOT"
+# Archive of finished episodes (e.g. a NAS), mounted read-only so the client can
+# continue the numbering from it. Unset -> the recording root itself (harmless).
+RECORDING_ARCHIVE="$(readlink -f "${GENIESIM_RECORDING_ARCHIVE:-$RECORDING_ROOT}")"
 [ -d "$CURRENT_DIR/config" ] && grant_access "$CURRENT_DIR/config"
 # Extract task name from task path or JSON file
 TASK_NAME=""
@@ -169,6 +179,8 @@ log_and_print "  Headless mode: $HEADLESS"
 log_and_print "  Recording: $RECORD"
 log_and_print "  Task template: $TASK"
 log_and_print "  Task name: $TASK_NAME"
+log_and_print "  Recording root: $RECORDING_ROOT"
+log_and_print "  Recording archive: $RECORDING_ARCHIVE"
 log_and_print "  Container name: $CONTAINER_NAME"
 log_and_print "  Log directory: $LOG_DIR"
 log_and_print "  Standalone mode: $STANDALONE (false = print to terminal, true = only save to file)"
@@ -219,6 +231,8 @@ CONTAINER_ID=$(docker run -d --name $CONTAINER_NAME \
     -v /dev/input:/dev/input:rw \
     -v $ASSETS_SRC:/geniesim_assets:rw \
     -v $CURRENT_DIR:/geniesim/main/data_collection:rw \
+    -v "$RECORDING_ROOT":/geniesim/main/data_collection/recording_data:rw \
+    -v "$RECORDING_ARCHIVE":/geniesim/main/data_collection/recording_archive:ro \
     -v $LOG_DIR:/geniesim/main/data_collection/logs/${TASK_NAME}:rw \
     -w /geniesim/main/data_collection \
     registry.agibot.com/genie-sim/geniesim3-data-collection:latest \

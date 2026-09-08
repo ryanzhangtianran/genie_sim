@@ -31,6 +31,8 @@ __pycache__/
 !config/robot_cfg/**/*.urdf
 !config/**/*.json
 recording_data
+# docker 挂载点：容器里指向 NAS 归档，宿主机上永远是空目录
+recording_archive
 config/robot_cfg/*/*_tmp.yaml
 tmp/
 logs

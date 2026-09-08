@@ -824,8 +824,11 @@ class CommandController:
                         ros_cmd_distro,
                         "-o",
                         recording_path,
+                        # Drop raw RGB and republish's unused plugin topics (/out, /out/theora,
+                        # /out/zstd...): those are advertised lazily on the first frame and
+                        # cannot be disabled from the launch args. Only *_rgb_compressed stays.
                         exclude_args,
-                        ".*_rgb(?!_)",
+                        "^/out(/|$)|.*_rgb(?!_)",
                         "-a",
                     ]
                     logger.info("publish_ros argv: %s", record_argv)
@@ -941,9 +944,16 @@ class CommandController:
                         topic_name = "/" + camera.split("/")[-1] + "_rgb"
                         compressed_name = topic_name + "_compressed"
                         ros_cmd_distro = os.getenv("ROS_CMD_DISTRO", "humble")
-                        extra_args = (
-                            ["--remap", "_out_transport:=compressed"] if ros_cmd_distro != "humble" else []
-                        )
+                        # Jazzy ignores the positional `raw compressed` args and has no
+                        # `_out_transport`; without the parameter republish emitted every
+                        # plugin onto shared `/out/<plugin>` topics, and the extractor
+                        # picked up zstd payloads as JPEG (~2% corrupt frames).
+                        if ros_cmd_distro != "humble":
+                            extra_args = ["-p", "out_transport:=compressed"]
+                            out_remap = f"/out/compressed:={compressed_name}"
+                        else:
+                            extra_args = []
+                            out_remap = f"/out:={compressed_name}"
                         # Fixed script + argv: topic_name / compressed_name ride
                         # in as data via "$@", so they cannot inject commands.
                         run_script = (
@@ -964,7 +974,7 @@ class CommandController:
                             "--remap",
                             f"/in:={topic_name}",
                             "--remap",
-                            f"/out:={compressed_name}",
+                            out_remap,
                         ]
                         logger.info("republish argv: %s", run_argv)
                         subpro = subprocess.Popen(

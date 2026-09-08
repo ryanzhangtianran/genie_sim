@@ -62,9 +62,18 @@ def find_near_point_grasp_pose(
 class PlaceStage(Stage):
     def __init__(self, stage_config, objects):
         super().__init__(stage_config, objects)
-        self.place_transform_up = np.array([0, 0, 0.01])
+        self.place_transform_up = self._parse_pre_place_pose_offset(
+            self.extra_params.get("pre_place_pose_offset", [0, 0, 0.01])
+        )
         self.use_pre_place = self.extra_params.get("use_pre_place", False)
         self.pre_place_offset = self.extra_params.get("pre_place_offset", 0.12)
+
+    @staticmethod
+    def _parse_pre_place_pose_offset(pre_place_pose_offset):
+        offset = np.array(pre_place_pose_offset, dtype=float)
+        if offset.shape != (3,):
+            raise ValueError("pre_place_pose_offset must be a 3-element xyz list")
+        return offset
 
     def select_pose(self, objects, robot):
         object_pose = objects[self.active_obj_id].obj_pose

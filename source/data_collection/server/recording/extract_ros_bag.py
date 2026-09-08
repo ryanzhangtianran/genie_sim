@@ -709,6 +709,12 @@ class RosExtrater:
                             label_msgs["head"].append(lable_msg)
                     elif connection.msgtype == "sensor_msgs/msg/CompressedImage":
                         rgb_msg = reader.deserialize(msg, "sensor_msgs/msg/CompressedImage")
+                        # Only JPEG streams belong here. image_transport's other
+                        # plugins (zstd, compressedDepth) use the same message type,
+                        # and their payloads are not decodable as images — a stray
+                        # one must not win the first-come slot below.
+                        if "jpeg" not in str(rgb_msg.format).lower():
+                            continue
                         current_time = (float)(rgb_msg.header.stamp.sec) + (float)(
                             rgb_msg.header.stamp.nanosec
                         ) * np.power(10.0, -9)

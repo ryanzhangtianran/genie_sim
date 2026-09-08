@@ -44,14 +44,15 @@ if __name__ == "__main__":
     with open(task_template_file, "r") as file:
         task_info = json.load(file)
 
-    # generate task info
+    # The layouts are no longer generated up front: agent.run() draws one
+    # immediately before each attempt and keeps it only if the episode
+    # succeeded, so saved_task/ ends up mirroring recording_data/ one-to-one.
     task_generator = TaskGenerator(task_info)
     task_folder = "saved_task/%s" % (task_info["task"])
-    task_generator.generate_tasks(
-        save_path=task_folder,
-        task_num=task_info["recording_setting"]["num_of_episode"],
-        task_name=task_info["task"],
-    )
+    recording_folder = "recording_data"
+    # Finished episodes may have been moved to an archive (bind-mounted here
+    # read-only by run_data_collection.sh); it only feeds the episode numbering.
+    archive_folder = "recording_archive"
     robot_position = task_generator.robot_init_pose["position"]
     robot_rotation = task_generator.robot_init_pose["quaternion"]
     stand = {"stand_type": "cylinder", "stand_size_x": 0.1, "stand_size_y": 0.1}
@@ -81,12 +82,21 @@ if __name__ == "__main__":
     render_semantic = False
     if "render_semantic" in task_info["recording_setting"]:
         render_semantic = task_info["recording_setting"]["render_semantic"]
+    recording_setting = task_info["recording_setting"]
     agent.run(
-        task_folder=task_folder,
-        camera_list=task_info["recording_setting"]["camera_list"],
+        task_generator=task_generator,
+        save_dir=task_folder,
+        recording_dir=recording_folder,
+        camera_list=recording_setting["camera_list"],
         use_recording=args.use_recording,
         workspaces=task_generator.workspaces_in_world_frame,
-        fps=task_info["recording_setting"]["fps"],
+        # num_of_episode has always meant "attempts", not "episodes kept".
+        # num_of_success is optional and lets a caller stop as soon as it has
+        # enough, instead of burning the rest of the budget.
+        max_attempts=recording_setting["num_of_episode"],
+        target_success=recording_setting.get("num_of_success"),
+        archive_dir=archive_folder,
+        fps=recording_setting["fps"],
         render_semantic=render_semantic,
         origin_task_info=task_info,
     )

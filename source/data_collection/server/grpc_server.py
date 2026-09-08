@@ -733,9 +733,10 @@ class ObservationService(sim_observation_service_pb2_grpc.SimObservationService)
     def set_frame_state(self, req, rsp):
         rsp = sim_observation_service_pb2.SetFrameStateRsp()
         frame_state = req.frame_state
-        rsp.msg = self.server_function.blocking_start_server(
+        result = self.server_function.blocking_start_server(
             data={"frame_state": frame_state}, Command=Command.SET_FRAME_STATE
         )
+        rsp.msg = result if isinstance(result, str) else str(result)
         return rsp
 
     def set_light(self, req, rsp):

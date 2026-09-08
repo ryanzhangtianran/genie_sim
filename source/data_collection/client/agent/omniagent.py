@@ -4,7 +4,6 @@
 # License: Mozilla Public License Version 2.0
 
 import copy
-import glob
 import json
 import os
 import pickle
@@ -615,6 +614,11 @@ class DataCollectionAgent(BaseAgent):
         if use_recording:
             recording_setting = origin_task_info.get("recording_setting", {})
             self.start_recording(
+                # The recording directory is the layout file's stem in square
+                # brackets — upstream's convention, kept as-is. The trailing
+                # counter that used to appear *outside* them ("[task_0]1") is
+                # gone for a different reason: it came from reusing layout
+                # names across runs, and indices are unique now.
                 task_name="[%s]" % (os.path.basename(os.path.normpath(task_file)).split(".")[0]),
                 camera_prim_list=camera_list,
                 fps=fps,
@@ -832,21 +836,84 @@ class DataCollectionAgent(BaseAgent):
             objects = self.update_objects(objects, arm=arm)
         return step_success, need_retry
 
+    def _next_layout_index(self, task_name, *recording_dirs):
+        """One past the highest index any recording uses, across all given dirs.
+
+        Recordings (not layouts) are the authority: the two are created and
+        deleted together. Finished episodes may have been archived elsewhere
+        (mounted read-only), hence several dirs; missing ones are skipped.
+        Trailing digits are the server's collision counter on legacy names.
+        """
+        pattern = re.compile(r"^\[%s_(\d+)\]\d*$" % re.escape(task_name))
+        highest = -1
+        for directory in recording_dirs:
+            if not directory or not os.path.isdir(directory):
+                continue
+            for entry in os.listdir(directory):
+                match = pattern.match(entry)
+                if match:
+                    highest = max(highest, int(match.group(1)))
+        return highest + 1
+
+    def _generate_layout(self, task_generator, save_dir, task_name, index, max_attempt=5):
+        """Write one randomized layout to ``<save_dir>/<task>_<index>.json``.
+
+        Returns the path, or None if the generator could not place the
+        objects — sampling can fail when the drawn poses do not fit the
+        workspace, and upstream retried a few times before giving up.
+        """
+        output_file = os.path.join(save_dir, "%s_%d.json" % (task_name, index))
+        for attempt in range(max_attempt):
+            if task_generator.generate(output_file):
+                return output_file
+            logger.error(f"Attempt {attempt+1}/{max_attempt} failed to generate {output_file}, retrying...")
+        return None
+
     def run(
         self,
-        task_folder,
+        task_generator,
+        save_dir,
+        recording_dir,
         camera_list,
         use_recording,
         workspaces,
+        max_attempts,
+        target_success=None,
+        archive_dir=None,
         fps=10,
         render_semantic=False,
         origin_task_info={},
     ):
-        tasks = glob.glob(task_folder + "/*.json")
-        for index, task_file in enumerate(tasks):
+        """Collect episodes, generating each layout right before it is run.
+
+        One layout per attempt, numbered from the existing recordings: a kept
+        episode advances the number, a failed one is deleted (recording by the
+        server, layout here) and its number reused. ``max_attempts`` bounds
+        the work; ``target_success`` stops early.
+        """
+        os.makedirs(save_dir, exist_ok=True)
+        task_name = origin_task_info["task"]
+        next_index = self._next_layout_index(task_name, recording_dir, archive_dir)
+        n_success = 0
+
+        for attempt in range(max_attempts):
+            if target_success is not None and n_success >= target_success:
+                logger.info(f"Reached {n_success}/{target_success} successful episodes, stopping early")
+                break
+
+            # The index advances only when the episode is kept, so successful
+            # episodes are numbered contiguously: a failed attempt's recording
+            # is removed synchronously by the server (handle_task_status) and
+            # its layout below, freeing the number for the next attempt.
+            task_file = self._generate_layout(task_generator, save_dir, task_name, next_index)
+            if task_file is None:
+                continue
+            logger.info(f"Attempt {attempt+1}/{max_attempts} using layout {task_file}")
+
             success = True
             if not self.check_task_file(task_file):
                 logger.error(f"Task file {task_file} check failed, skip this task")
+                os.remove(task_file)
                 continue
             task_info, objects = self.load_task(
                 task_file,
@@ -986,6 +1053,14 @@ class DataCollectionAgent(BaseAgent):
             task_info.copy()
             self.robot.client.send_task_status(success, fail_stage_step)
             if success:
+                n_success += 1
+                next_index += 1
                 logger.info(">>>>>>>>>>>>>>>>>>>>  TASK SUCCESS ! <<<<<<<<<<<<<<<<<<<<")
+            else:
+                # The server has just deleted this attempt's recording
+                # (handle_task_status); drop the layout with it so what stays
+                # on disk is exactly the episodes that were kept.
+                os.remove(task_file)
 
+        logger.info(f"Collected {n_success} successful episode(s)")
         return True
