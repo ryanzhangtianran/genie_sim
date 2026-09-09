@@ -13,7 +13,7 @@ GENIESIM=/home/tianran/Miniforge/envs/geniesim/bin/geniesim
 PY=/home/tianran/Miniforge/envs/geniesim/bin/python
 DC="$REPO/source/data_collection"
 
-SRC_TASK="pick_building_block_of_specific_size_big"   # 上游模板
+SRC_TASK="${SRC_TASK:-pick_building_block_of_specific_size_big}"   # 上游模板
 TASK="${TASK:-pick_biggest_block}"                    # 我们的副本(不动上游)
 
 # 录制必须在本地盘（mcap ≈ 480 MB/s，NAS 只有 28~111 MB/s，直录会让 recorder 收尾被
@@ -76,20 +76,27 @@ list_done() {
     done | sort -s -k1,1n -k2,2n | awk -F'\t' '!seen[$1 FS $2]++' | cut -f3-
 }
 
-# 归档：先拷再删源（rsync 幂等，中断重跑即续传）。mcap 不搬、留本地。布局按 episode
-# 逐个搬：归档在后台跑，下一轮正往同一个 saved_task/<task>/ 写新布局，不能整目录同步。
+# 归档：每集一个子进程并行搬（NFS 小文件是 close→COMMIT 延迟瓶颈，靠并发摊平），
+# 先拷再删源（rsync 幂等，中断重跑即续传）。mcap 不搬、留本地。布局按 episode 逐个搬：
+# 归档在后台跑，下一轮正往同一个 saved_task/<task>/ 写新布局，不能整目录同步。
+archive_one() {   # $1 = 本地 episode 目录
+    local d=$1 b lay
+    b=$(basename "$d")
+    [[ "$b" =~ ^\[${TASK}_([0-9]+)\]([0-9]*)$ ]] || return 0
+    lay="$SAVED_LOCAL/${TASK}_${BASH_REMATCH[1]}.json"
+    rsync -aW --inplace --exclude='*.mcap' "$d/" "$REC/$b/" || { log "✗ 归档失败：$b"; return 1; }
+    find "$d" -mindepth 1 -not -name '*.mcap' -delete 2>/dev/null
+    rmdir "$d" 2>/dev/null && log "  $b 归档完成" || log "  $b 归档完成（本地还留着 mcap 或删不掉）"
+    [ -f "$lay" ] && { rsync -a "$lay" "$SAVED_NAS/" && rm -f "$lay"; } || log "  ⚠️  $b 没有对应布局"
+}
 archive_done() {
-    local d b lay
+    local d pids=() rc=0
     for d in "$REC_LOCAL"/\[${TASK}_*; do
         [ -d "$d" ] && [ -f "$d/aligned_joints.h5" ] || continue
-        b=$(basename "$d")
-        [[ "$b" =~ ^\[${TASK}_([0-9]+)\]([0-9]*)$ ]] || continue
-        lay="$SAVED_LOCAL/${TASK}_${BASH_REMATCH[1]}.json"
-        rsync -a --exclude='*.mcap' "$d/" "$REC/$b/" || die "归档失败：$d → $REC/$b"
-        find "$d" -mindepth 1 -not -name '*.mcap' -delete 2>/dev/null
-        rmdir "$d" 2>/dev/null && log "  $b 归档完成" || log "  $b 归档完成（本地还留着 mcap 或删不掉）"
-        [ -f "$lay" ] && { rsync -a "$lay" "$SAVED_NAS/" && rm -f "$lay"; } || log "  ⚠️  $b 没有对应布局"
+        archive_one "$d" & pids+=($!)
     done
+    for p in "${pids[@]:-}"; do [ -n "$p" ] && { wait "$p" || rc=1; }; done
+    [ "$rc" -eq 0 ] || die "本轮归档有失败（见上面），中止"
 }
 
 # 归档后台跑、和下一轮重叠；同一时刻只一个，起新的前先等上一个。
